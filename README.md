@@ -27,7 +27,12 @@ An autonomous Pacman agent utilizing Markov Decision Processes (MDP) to intellig
   - The agent identifies walls, food, capsules, and initializes the game grid.
   - Rewards are assigned to different grid positions based on the presence of game elements.
   - This is how small and medium grid looks.
+
+
 ![image](https://github.com/user-attachments/assets/940d26ad-6137-4a04-a440-4698745cbe42)
+
+
+
 
 ![image](https://github.com/user-attachments/assets/f7f60ffc-4e99-458b-8d3b-be75a4129274)
 
