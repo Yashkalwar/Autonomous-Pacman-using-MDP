@@ -1,0 +1,265 @@
+# mdpAgents.py
+# parsons/20-nov-2017
+#
+# Version 1
+#
+# The starting point for CW2.
+#
+# Intended to work with the PacMan AI projects from:
+#
+# http://ai.berkeley.edu/
+#
+# These use a simple API that allow us to control Pacman's interaction with
+# the environment adding a layer on top of the AI Berkeley code.
+#
+# As required by the licensing agreement for the PacMan AI we have:
+#
+# Licensing Information:  You are free to use or extend these projects for
+# educational purposes provided that (1) you do not distribute or publish
+# solutions, (2) you retain this notice, and (3) you provide clear
+# attribution to UC Berkeley, including a link to http://ai.berkeley.edu.
+# 
+# Attribution Information: The Pacman AI projects were developed at UC Berkeley.
+# The core projects and autograders were primarily created by John DeNero
+# (denero@cs.berkeley.edu) and Dan Klein (klein@cs.berkeley.edu).
+# Student side autograding was added by Brad Miller, Nick Hay, and
+# Pieter Abbeel (pabbeel@cs.berkeley.edu).
+
+# The agent here is was written by Simon Parsons, based on the code in
+# pacmanAgents.py
+
+from pacman import Directions
+from game import Agent
+import api
+import random
+import game
+import util
+
+class MDPAgent(Agent):
+    def __init__(self):
+        self.GAMMA = 0.9
+        self.THETA = 0.01
+        self.MAX_ITERATIONS = 100
+        self.GHOST_PENALTY = -2500   
+        self.SCARED_GHOST_REWARD = 5000
+        self.GHOST_RADIUS = 3
+        self.FOOD_REWARD = 2000
+        self.STEP_COST = -0.1
+        
+        # State variables
+        self.grid = {}
+        self.rewards = {}
+        self.visited_states = set()
+        self.first_move = True
+        self.iteration_count = 0
+        
+    def runValueIteration(self, state):
+            """Run value iteration to compute utilities."""
+            iterations = self.MAX_ITERATIONS if self.first_move or self.iteration_count % 4 == 0 else 5
+                
+            for iteration in range(iterations):
+                delta = 0
+                new_utilities = {}
+                
+                for pos in self.grid:
+                    if pos not in api.walls(state):
+                        max_utility = float('-inf')
+                        legal = [Directions.NORTH, Directions.SOUTH, Directions.EAST, Directions.WEST]
+                        
+                        for action in legal:
+                            successors = self.getSuccessors(pos, action)
+                            expected_utility = sum(prob * self.grid.get(next_pos, 0) 
+                                                for next_pos, prob in successors)
+                            max_utility = max(max_utility, expected_utility)
+                        
+                        if max_utility == float('-inf'):
+                            max_utility = 0
+                        
+                        new_utilities[pos] = self.rewards[pos] + self.GAMMA * max_utility
+                        delta = max(delta, abs(new_utilities[pos] - self.grid.get(pos, 0)))
+                
+                self.grid = new_utilities
+                if delta < self.THETA:
+                    break
+
+    def getSuccessors(self, position, action):
+        """Get possible next states and their probabilities."""
+        x, y = position
+        successors = []
+        
+        if action == Directions.NORTH:
+            successors = [((x, y+1), 0.8), ((x+1, y), 0.1), ((x-1, y), 0.1)]
+        elif action == Directions.SOUTH:
+            successors = [((x, y-1), 0.8), ((x+1, y), 0.1), ((x-1, y), 0.1)]
+        elif action == Directions.EAST:
+            successors = [((x+1, y), 0.8), ((x, y+1), 0.1), ((x, y-1), 0.1)]
+        elif action == Directions.WEST:
+            successors = [((x-1, y), 0.8), ((x, y+1), 0.1), ((x, y-1), 0.1)]
+            
+        return successors
+    
+    def get_next_position(self, pos, direction):
+        """Calculate next position given current position and direction."""
+        x, y = pos
+        if direction == Directions.NORTH:
+            return (x, y + 1)
+        elif direction == Directions.SOUTH:
+            return (x, y - 1)
+        elif direction == Directions.EAST:
+            return (x + 1, y)
+        elif direction == Directions.WEST:
+            return (x - 1, y)
+        return pos
+    
+    def makeGrid(self, state):
+        """Initialize the reward grid."""
+        walls = api.walls(state)
+        food = api.food(state)
+        
+        # Get map boundaries
+        corners = api.corners(state)
+        min_x = min(x for x, y in corners)
+        max_x = max(x for x, y in corners)
+        min_y = min(y for x, y in corners)
+        max_y = max(y for x, y in corners)
+        
+        # Initialize grid
+        for x in range(min_x, max_x + 1):
+            for y in range(min_y, max_y + 1):
+                pos = (x, y)
+                if pos not in walls:
+                    self.rewards[pos] = self.STEP_COST
+                    self.grid[pos] = 0
+        
+        # Set food rewards with distance-based bonus
+        for f in food:
+            # Calculate distance from center to make central food more attractive
+            center_x = (min_x + max_x) / 2
+            center_y = (min_y + max_y) / 2
+            dist_from_center = abs(f[0] - center_x) + abs(f[1] - center_y)
+            # Central food gets higher reward
+            self.rewards[f] = self.FOOD_REWARD + (10 - dist_from_center) * 50
+            self.grid[f] = self.FOOD_REWARD
+
+    def getAction(self, state):
+        """Choose the best action based on current state."""
+        if self.first_move:
+            self.makeGrid(state)
+            self.first_move = False
+
+        legal = api.legalActions(state)
+        if Directions.STOP in legal:
+            legal.remove(Directions.STOP)
+
+        current_pos = api.whereAmI(state)
+        food = api.food(state)
+        
+        # Direct path to food if adjacent and safe
+        for f in food:
+            if self.manhattan_distance(current_pos, f) == 1:
+                is_safe = True
+                for ghost_pos, is_scared in api.ghostStates(state):
+                    if not is_scared:
+                        ghost_x, ghost_y = int(ghost_pos[0]), int(ghost_pos[1])
+                        if self.manhattan_distance((ghost_x, ghost_y), f) <= 1:
+                            is_safe = False
+                            break
+                
+                if is_safe:
+                    for action in legal:
+                        next_pos = self.get_next_position(current_pos, action)
+                        if next_pos == f:
+                            return action
+
+        # Emergency ghost avoidance
+        for ghost_pos, is_scared in api.ghostStates(state):
+            if not is_scared:
+                ghost_x, ghost_y = int(ghost_pos[0]), int(ghost_pos[1])
+                ghost_dist = self.manhattan_distance(current_pos, (ghost_x, ghost_y))
+                
+                if ghost_dist <= 2:
+                    best_action = None
+                    max_distance = -float('inf')
+                    for action in legal:
+                        next_pos = self.get_next_position(current_pos, action)
+                        distance = self.manhattan_distance(next_pos, (ghost_x, ghost_y))
+                        if distance > max_distance:
+                            max_distance = distance
+                            best_action = action
+                    if best_action:
+                        return best_action
+
+        # Update rewards and run value iteration
+        self.updateGhostRewards(state)
+        self.runValueIteration(state)
+
+        # Choose best action based on utilities and food distances
+        max_score = float('-inf')
+        best_action = None
+
+        for action in legal:
+            next_pos = self.get_next_position(current_pos, action)
+            # Calculate utility score
+            successors = self.getSuccessors(current_pos, action)
+            utility = sum(prob * self.grid.get(next_pos, 0) for next_pos, prob in successors)
+            
+            # Add bonus for moving towards food
+            min_food_dist = float('inf')
+            for f in food:
+                dist = self.manhattan_distance(next_pos, f)
+                min_food_dist = min(min_food_dist, dist)
+            
+            # Add small ghost safety factor
+            ghost_safety = 0
+            for ghost_pos, is_scared in api.ghostStates(state):
+                if not is_scared:
+                    ghost_x, ghost_y = int(ghost_pos[0]), int(ghost_pos[1])
+                    dist = self.manhattan_distance(next_pos, (ghost_x, ghost_y))
+                    if dist < 2:
+                        ghost_safety = -500
+            
+            # Combine utility with food distance bonus and ghost safety
+            score = utility + (1.0 / (min_food_dist + 1)) * self.FOOD_REWARD + ghost_safety
+            
+            if score > max_score:
+                max_score = score
+                best_action = action
+
+        return api.makeMove(best_action, legal) 
+
+    def manhattan_distance(self, pos1, pos2):
+        """Calculate Manhattan distance between two positions."""
+        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+    def updateGhostRewards(self, state):
+        """Update rewards based on current ghost states."""
+        # Reset rewards to base values
+        food = api.food(state)
+        for pos in self.rewards:
+            if pos in food:
+                # Extra reward for last food
+                if len(food) == 1:
+                    self.rewards[pos] = self.FOOD_REWARD * 2
+                else:
+                    self.rewards[pos] = self.FOOD_REWARD
+            else:
+                self.rewards[pos] = self.STEP_COST
+
+        # Update ghost penalties with adjusted gradient
+        for ghost_pos, is_scared in api.ghostStates(state):
+            if not is_scared:
+                ghost_x, ghost_y = int(ghost_pos[0]), int(ghost_pos[1])
+                
+                # Create penalty gradient around ghost
+                for dx in range(-self.GHOST_RADIUS, self.GHOST_RADIUS + 1):
+                    for dy in range(-self.GHOST_RADIUS, self.GHOST_RADIUS + 1):
+                        pos = (ghost_x + dx, ghost_y + dy)
+                        if pos in self.rewards:
+                            distance = abs(dx) + abs(dy)
+                            if distance == 0:
+                                self.rewards[pos] = self.GHOST_PENALTY
+                            elif distance == 1:
+                                self.rewards[pos] = self.GHOST_PENALTY / 2
+                            else:
+                                penalty = self.GHOST_PENALTY / (distance * 2)
+                                self.rewards[pos] = min(self.rewards[pos], penalty)
